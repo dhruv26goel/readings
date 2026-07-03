@@ -23,12 +23,17 @@
   .search{margin:0 14px 12px;padding:9px 12px;border:1px solid var(--line);border-radius:9px;
     background:#fff;color:var(--text);font-size:14px;outline:none}
   .search:focus{border-color:var(--accent)}
-  .list{overflow:auto;padding:0 10px 18px;flex:1}
+  .filters{padding:0 14px 12px;border-bottom:1px solid var(--line);display:flex;gap:8px}
+  .filters select{flex:1;min-width:0;border:1px solid var(--line);border-radius:8px;
+    background:#fff;color:var(--text);font-size:13px;padding:7px 8px;outline:none;cursor:pointer}
+  .filters select:focus{border-color:var(--accent)}
+  .list{overflow:auto;padding:8px 10px 18px;flex:1}
+  .count{color:var(--muted);font-size:12px;padding:6px 4px 2px}
   .item{display:block;width:100%;text-align:left;cursor:pointer;border:0;background:transparent;
     color:inherit;padding:11px 12px;border-radius:10px;margin-bottom:2px}
   .item:hover{background:#eef1f6}
   .item.active{background:var(--accent-soft)}
-  .item .theme{font-weight:600;font-size:15px;text-transform:capitalize;line-height:1.35}
+  .item .theme{font-weight:600;font-size:15px;line-height:1.35}
   .item .meta{color:var(--muted);font-size:12.5px;margin-top:3px}
   .item.active .theme{color:var(--accent)}
   /* reading pane */
@@ -61,7 +66,17 @@
 <div class="app">
   <aside class="side">
     <h1>Podcast Digests</h1>
-    <input class="search" id="q" placeholder="Search title or show…" autocomplete="off">
+    <input class="search" id="q" placeholder="Search title, show, or content…" autocomplete="off">
+    <div class="filters">
+      <select id="showFilter"><option value="">All podcasts</option></select>
+      <select id="dateFilter">
+        <option value="all">All time</option>
+        <option value="month">This month</option>
+        <option value="lastmonth">Last month</option>
+        <option value="older">Older</option>
+      </select>
+    </div>
+    <div class="count" id="count"></div>
     <div class="list" id="list"></div>
   </aside>
   <main class="main"><div id="doc" class="doc"></div></main>
@@ -161,35 +176,88 @@
 ]</script>
 <script>
   const DIGESTS = JSON.parse(document.getElementById('digest-data').textContent);
-  const listEl = document.getElementById('list');
-  const docEl  = document.getElementById('doc');
-  const qEl    = document.getElementById('q');
+  const listEl   = document.getElementById('list');
+  const docEl    = document.getElementById('doc');
+  const qEl      = document.getElementById('q');
+  const countEl  = document.getElementById('count');
+  const showFilterEl = document.getElementById('showFilter');
+  const dateFilterEl = document.getElementById('dateFilter');
   let active = -1;
+  let activeId = null;
+
+  const ACRONYMS = new Set(['ai','llm','ml','ui','ux','api','sql','ceo','cto','cfo','vc','prd','mvp','roi','saas','b2b','b2c','seo','sre','pm','vp','yc']);
+  const SMALL_WORDS = new Set(['a','an','and','as','at','but','by','for','in','of','on','or','the','to','vs','via','with','over','from']);
+  function titleCase(str){
+    const words = (str||'').split(' ').filter(Boolean);
+    return words.map((w,i)=>{
+      const lw = w.toLowerCase();
+      if(ACRONYMS.has(lw)) return lw.toUpperCase();
+      if(i>0 && i<words.length-1 && SMALL_WORDS.has(lw)) return lw;
+      return lw.charAt(0).toUpperCase()+lw.slice(1);
+    }).join(' ');
+  }
+
+  function monthsAgo(dateStr){
+    const [y,m] = dateStr.split('-').map(Number);
+    const now = new Date();
+    return (now.getFullYear()-y)*12 + (now.getMonth()+1-m);
+  }
+  function inDateBucket(d){
+    const bucket = dateFilterEl.value;
+    if(bucket==='all') return true;
+    const diff = monthsAgo(d.date);
+    if(bucket==='month') return diff===0;
+    if(bucket==='lastmonth') return diff===1;
+    if(bucket==='older') return diff>=2;
+    return true;
+  }
 
   function render(i){
     active = i; const d = DIGESTS[i];
+    activeId = d ? d.date+'|'+d.show+'|'+d.theme : null;
     docEl.innerHTML = d ? marked.parse(d.md) : '';
-    [...listEl.children].forEach((c,idx)=>c.classList.toggle('active', idx===i));
     document.querySelector('.main').scrollTop = 0;
+    buildList();
   }
 
-  function buildList(filter){
-    listEl.innerHTML='';
-    const f=(filter||'').toLowerCase();
-    DIGESTS.forEach((d,i)=>{
-      const hay=(d.theme+' '+d.show).toLowerCase();
-      if(f && !hay.includes(f)) return;
-      const b=document.createElement('button');
-      b.className='item'+(i===active?' active':'');
-      b.innerHTML='<div class="theme">'+d.theme+'</div><div class="meta">'+d.show+' · '+d.date+'</div>';
-      b.onclick=()=>render(i);
-      listEl.appendChild(b);
+  function buildShowOptions(){
+    const shows = [...new Set(DIGESTS.map(d=>d.show))].sort();
+    shows.forEach(s=>{
+      const o=document.createElement('option');
+      o.value=s; o.textContent=titleCase(s);
+      showFilterEl.appendChild(o);
     });
   }
 
-  qEl.addEventListener('input', e=>buildList(e.target.value));
-  if(DIGESTS.length){ buildList(''); render(0); }
-  else { docEl.className='empty'; docEl.textContent='No digests yet. Run /digest to create one.'; }
+  function buildList(){
+    listEl.innerHTML='';
+    const f=(qEl.value||'').toLowerCase();
+    const showSel = showFilterEl.value;
+    let shown=0;
+    DIGESTS.forEach((d,i)=>{
+      if(showSel && d.show!==showSel) return;
+      if(!inDateBucket(d)) return;
+      if(f){
+        const hay=(d.theme+' '+d.show+' '+d.md).toLowerCase();
+        if(!hay.includes(f)) return;
+      }
+      shown++;
+      const id = d.date+'|'+d.show+'|'+d.theme;
+      const b=document.createElement('button');
+      b.className='item'+(id===activeId?' active':'');
+      b.innerHTML='<div class="theme">'+titleCase(d.theme)+'</div><div class="meta">'+titleCase(d.show)+' · '+d.date+'</div>';
+      b.onclick=()=>render(i);
+      listEl.appendChild(b);
+    });
+    countEl.textContent = shown+' of '+DIGESTS.length+' digest'+(DIGESTS.length===1?'':'s');
+  }
+
+  qEl.addEventListener('input', buildList);
+  showFilterEl.addEventListener('change', buildList);
+  dateFilterEl.addEventListener('change', buildList);
+  buildShowOptions();
+  if(DIGESTS.length){ render(0); }
+  else { buildList(); docEl.className='empty'; docEl.textContent='No digests yet. Run /digest to create one.'; }
 </script>
 </body>
 </html>
